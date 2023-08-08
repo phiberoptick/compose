@@ -32,7 +32,7 @@ import (
 	"github.com/docker/compose/v2/pkg/compose"
 )
 
-type convertOptions struct {
+type configOptions struct {
 	*ProjectOptions
 	Format              string
 	Output              string
@@ -40,6 +40,7 @@ type convertOptions struct {
 	resolveImageDigests bool
 	noInterpolate       bool
 	noNormalize         bool
+	noResolvePath       bool
 	services            bool
 	volumes             bool
 	profiles            bool
@@ -48,8 +49,18 @@ type convertOptions struct {
 	noConsistency       bool
 }
 
-func convertCommand(p *ProjectOptions, streams api.Streams, backend api.Service) *cobra.Command {
-	opts := convertOptions{
+func (o *configOptions) ToProject(services []string) (*types.Project, error) {
+	return o.ProjectOptions.ToProject(services,
+		cli.WithInterpolation(!o.noInterpolate),
+		cli.WithResolvedPaths(!o.noResolvePath),
+		cli.WithNormalization(!o.noNormalize),
+		cli.WithConsistency(!o.noConsistency),
+		cli.WithProfiles(o.Profiles),
+		cli.WithDiscardEnvFile)
+}
+
+func configCommand(p *ProjectOptions, streams api.Streams, backend api.Service) *cobra.Command {
+	opts := configOptions{
 		ProjectOptions: p,
 	}
 	cmd := &cobra.Command{
@@ -96,6 +107,7 @@ func convertCommand(p *ProjectOptions, streams api.Streams, backend api.Service)
 	flags.BoolVarP(&opts.quiet, "quiet", "q", false, "Only validate the configuration, don't print anything.")
 	flags.BoolVar(&opts.noInterpolate, "no-interpolate", false, "Don't interpolate environment variables.")
 	flags.BoolVar(&opts.noNormalize, "no-normalize", false, "Don't normalize compose model.")
+	flags.BoolVar(&opts.noResolvePath, "no-path-resolution", false, "Don't resolve file paths.")
 	flags.BoolVar(&opts.noConsistency, "no-consistency", false, "Don't check model consistency - warning: may produce invalid Compose output")
 
 	flags.BoolVar(&opts.services, "services", false, "Print the service names, one per line.")
@@ -108,14 +120,9 @@ func convertCommand(p *ProjectOptions, streams api.Streams, backend api.Service)
 	return cmd
 }
 
-func runConfig(ctx context.Context, streams api.Streams, backend api.Service, opts convertOptions, services []string) error {
+func runConfig(ctx context.Context, streams api.Streams, backend api.Service, opts configOptions, services []string) error {
 	var content []byte
-	project, err := opts.ToProject(services,
-		cli.WithInterpolation(!opts.noInterpolate),
-		cli.WithResolvedPaths(true),
-		cli.WithNormalization(!opts.noNormalize),
-		cli.WithConsistency(!opts.noConsistency),
-		cli.WithDiscardEnvFile)
+	project, err := opts.ToProject(services)
 	if err != nil {
 		return err
 	}
@@ -144,7 +151,7 @@ func runConfig(ctx context.Context, streams api.Streams, backend api.Service, op
 	return err
 }
 
-func runServices(streams api.Streams, opts convertOptions) error {
+func runServices(streams api.Streams, opts configOptions) error {
 	project, err := opts.ToProject(nil)
 	if err != nil {
 		return err
@@ -155,7 +162,7 @@ func runServices(streams api.Streams, opts convertOptions) error {
 	})
 }
 
-func runVolumes(streams api.Streams, opts convertOptions) error {
+func runVolumes(streams api.Streams, opts configOptions) error {
 	project, err := opts.ToProject(nil)
 	if err != nil {
 		return err
@@ -166,7 +173,7 @@ func runVolumes(streams api.Streams, opts convertOptions) error {
 	return nil
 }
 
-func runHash(streams api.Streams, opts convertOptions) error {
+func runHash(streams api.Streams, opts configOptions) error {
 	var services []string
 	if opts.hash != "*" {
 		services = append(services, strings.Split(opts.hash, ",")...)
@@ -177,7 +184,7 @@ func runHash(streams api.Streams, opts convertOptions) error {
 	}
 
 	if len(services) > 0 {
-		err = withSelectedServicesOnly(project, services)
+		err = project.ForServices(services, types.IgnoreDependencies)
 		if err != nil {
 			return err
 		}
@@ -198,7 +205,7 @@ func runHash(streams api.Streams, opts convertOptions) error {
 	return nil
 }
 
-func runProfiles(streams api.Streams, opts convertOptions, services []string) error {
+func runProfiles(streams api.Streams, opts configOptions, services []string) error {
 	set := map[string]struct{}{}
 	project, err := opts.ToProject(services)
 	if err != nil {
@@ -220,17 +227,13 @@ func runProfiles(streams api.Streams, opts convertOptions, services []string) er
 	return nil
 }
 
-func runConfigImages(streams api.Streams, opts convertOptions, services []string) error {
+func runConfigImages(streams api.Streams, opts configOptions, services []string) error {
 	project, err := opts.ToProject(services)
 	if err != nil {
 		return err
 	}
 	for _, s := range project.Services {
-		if s.Image != "" {
-			fmt.Fprintln(streams.Out(), s.Image)
-		} else {
-			fmt.Fprintf(streams.Out(), "%s%s%s\n", project.Name, api.Separator, s.Name)
-		}
+		fmt.Fprintln(streams.Out(), api.GetImageNameOrDefault(s, project.Name))
 	}
 	return nil
 }
